@@ -1,0 +1,28 @@
+{
+  "name": "reebot-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test chat.test.mjs ingest.test.mjs && node smoke-test.mjs"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "chromadb": "^2.4.6",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.3",
+    "mongoose": "^9.9.3",
+    "multer": "^1.4.5-lts.1",
+    "openai": "^4.85.4",
+    "playwright": "^1.50.1"
+  },
+  "devDependencies": {
+    "mongodb-memory-server": "^11.2.0"
+  }
+}
