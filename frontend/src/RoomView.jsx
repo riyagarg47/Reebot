@@ -43,6 +43,94 @@ function LinkIcon() {
   );
 }
 
+function CitationLink({ href = "", children }) {
+  const isPdfCitation = href.startsWith("/citations/");
+  const citationRef = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [preview, setPreview] = useState("");
+  const [error, setError] = useState("");
+  const [position, setPosition] = useState({});
+
+  useEffect(
+    () => () => {
+      if (preview) URL.revokeObjectURL(preview);
+    },
+    [preview]
+  );
+
+  async function showPreview() {
+    const citation = citationRef.current?.getBoundingClientRect();
+    if (citation) {
+      const edge = 12;
+      const gap = 8;
+      const width = Math.min(680, window.innerWidth - edge * 2);
+      const spaceAbove = citation.top - edge;
+      const spaceBelow = window.innerHeight - citation.bottom - edge;
+      const showAbove = spaceAbove >= 560 || spaceAbove > spaceBelow;
+
+      setPosition({
+        left: Math.min(
+          Math.max(citation.left, edge),
+          window.innerWidth - width - edge
+        ),
+        maxHeight: Math.max(
+          160,
+          Math.min(680, (showAbove ? spaceAbove : spaceBelow) - gap)
+        ),
+        ...(showAbove
+          ? { bottom: window.innerHeight - citation.top + gap }
+          : { top: citation.bottom + gap }),
+      });
+    }
+
+    setOpen(true);
+    if (preview || error) return;
+
+    try {
+      const response = await authedFetch(href);
+      const isImage = response.headers.get("content-type")?.startsWith("image/");
+      if (!response.ok || !isImage) {
+        throw new Error("Preview unavailable.");
+      }
+      setPreview(URL.createObjectURL(await response.blob()));
+    } catch {
+      setError("Preview unavailable.");
+    }
+  }
+
+  if (!isPdfCitation) {
+    return (
+      <a href={href} target="_blank" rel="noreferrer">
+        {children}
+      </a>
+    );
+  }
+
+  return (
+    <span
+      ref={citationRef}
+      className="citation"
+      onMouseEnter={showPreview}
+      onMouseLeave={() => setOpen(false)}
+      onFocus={showPreview}
+      onBlur={() => setOpen(false)}
+    >
+      <a href={href} onClick={(event) => event.preventDefault()}>
+        {children}
+      </a>
+      {open ? (
+        <span className="citation-preview" style={position} role="tooltip">
+          {preview ? (
+            <img src={preview} alt="Highlighted PDF citation" />
+          ) : (
+            error || "Loading page…"
+          )}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 function RoomView({
   roomId,
   roomName,
@@ -77,19 +165,8 @@ function RoomView({
     api(`/rooms/${roomId}`)
       .then((data) => {
         if (cancelled) return;
-        const roomSources = (data.sources || []).map((source) => ({
-          id: source.id,
-          type: source.type,
-          name: source.name,
-        }));
-        setSources(roomSources);
-        setMessages(
-          (data.messages || []).map((m) => ({
-            id: m.id,
-            role: m.role,
-            text: m.text,
-          }))
-        );
+        setSources(data.sources || []);
+        setMessages(data.messages || []);
       })
       .catch(guardAuth);
     return () => {
@@ -129,10 +206,7 @@ function RoomView({
           type: item.type,
           name: item.name,
         }));
-        setSources((current) => [
-          ...current,
-          ...savedSources,
-        ]);
+        setSources((current) => [...current, ...savedSources]);
       }
       notifyDuplicates(data.duplicates);
     } catch (error) {
@@ -160,10 +234,7 @@ function RoomView({
           type: "url",
           name: trimmed,
         };
-        setSources((current) => [
-          ...current,
-          savedSource,
-        ]);
+        setSources((current) => [...current, savedSource]);
         setUrl("");
         setUrlOpen(false);
       }
@@ -380,7 +451,9 @@ function RoomView({
                     </span>
                     {message.role === "assistant" ? (
                       <div className="markdown">
-                        <Markdown>{message.text}</Markdown>
+                        <Markdown components={{ a: CitationLink }}>
+                          {message.text}
+                        </Markdown>
                       </div>
                     ) : (
                       <p className="user-text">{message.text}</p>

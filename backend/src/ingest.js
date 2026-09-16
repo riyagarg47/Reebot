@@ -1,4 +1,5 @@
 import { chromium } from "playwright";
+import { getReebotCollection } from "./chroma.js";
 
 // Intl.Segmenter handles sentence boundaries more reliably than splitting on
 // periods, especially around punctuation, abbreviations, and Unicode text.
@@ -36,11 +37,14 @@ export function chunkText(text, size = 1000, overlap = 200) {
   const clean = text.replace(/\s+/g, " ").trim();
   if (!clean) return [];
   if (size <= 0 || overlap < 0) {
-    throw new RangeError("Chunk size must be positive and overlap non-negative.");
+    throw new RangeError(
+      "Chunk size must be positive and overlap non-negative.",
+    );
   }
 
-  const sentences = Array.from(sentenceSegmenter.segment(clean), ({ segment }) =>
-    segment.trim(),
+  const sentences = Array.from(
+    sentenceSegmenter.segment(clean),
+    ({ segment }) => segment.trim(),
   )
     .filter(Boolean)
     .map((sentence) =>
@@ -96,19 +100,33 @@ export async function embedTexts(openai, model, texts) {
   return response.data.map((item) => item.embedding);
 }
 
-export async function saveChunks(chroma, openai, model, chunks, metadata) {
+export async function saveChunks(
+  chroma,
+  openai,
+  model,
+  chunks,
+  metadata,
+  ids = chunks.map(() => crypto.randomUUID()),
+) {
   if (chunks.length === 0) {
     throw new Error("No text found to embed.");
   }
 
   const embeddings = await embedTexts(openai, model, chunks);
-  const collection = await chroma.getOrCreateCollection({ name: "reebot" });
+  const collection = await getReebotCollection(chroma);
+
+  // collection.add() receives each document chunk. The collection schema sees: sourceKey: K.DOCUMENT, so it generates the sparse BM25 vector.
+  // stores it under the bm25_embedding key.
   await collection.add({
     // Every chunk needs its own stable identifier in Chroma. Source metadata is
     // duplicated so each search result can be filtered and attributed alone.
-    ids: chunks.map(() => crypto.randomUUID()),
+    ids,
     embeddings,
     documents: chunks,
-    metadatas: chunks.map(() => metadata),
+    metadatas: Array.isArray(metadata)
+      ? metadata
+      : chunks.map(() => metadata),
   });
+
+  return ids;
 }

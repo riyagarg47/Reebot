@@ -4,7 +4,7 @@ from contextlib import redirect_stdout
 
 
 def parse_pdf(pdf_bytes):
-    """Extract Markdown from in-memory PDF bytes without writing any files."""
+    """Extract page-aware Markdown without writing the uploaded PDF to disk."""
 
     # stdout is reserved for the JSON response consumed by Node.js.
     with redirect_stdout(sys.stderr):
@@ -13,11 +13,19 @@ def parse_pdf(pdf_bytes):
 
         document = pymupdf.open(stream=pdf_bytes, filetype="pdf")
         try:
-            markdown = pymupdf4llm.to_markdown(document)
+            pages = [
+                {
+                    "pageNumber": page_number + 1,
+                    "markdown": pymupdf4llm.to_markdown(
+                        document, pages=[page_number]
+                    ),
+                }
+                for page_number in range(document.page_count)
+            ]
         finally:
             document.close()
 
-    return markdown
+    return [page for page in pages if page["markdown"].strip()]
 
 
 def main():
@@ -26,12 +34,12 @@ def main():
     if not pdf_bytes:
         raise ValueError("No PDF data received.")
 
-    markdown = parse_pdf(pdf_bytes)
-    if not markdown.strip():
+    pages = parse_pdf(pdf_bytes)
+    if not pages:
         raise ValueError("No text found in the PDF.")
 
     # Keep stdout machine-readable: the Node bridge expects exactly one JSON object.
-    json.dump({"markdown": markdown}, sys.stdout, ensure_ascii=False)
+    json.dump({"pages": pages}, sys.stdout, ensure_ascii=False)
 
 
 if __name__ == "__main__":

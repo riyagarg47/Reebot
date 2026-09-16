@@ -40,6 +40,7 @@ const sourceSchema = new Schema({
   sourceId: { type: String, required: true },
   type: { type: String, enum: ["pdf", "url"], required: true },
   name: { type: String, required: true },
+  fileName: String,
 });
 
 sourceSchema.index({ roomId: 1, sourceId: 1 }, { unique: true });
@@ -58,7 +59,21 @@ const messageSchema = new Schema(
   { timestamps: true }
 );
 
+const citationSchema = new Schema({
+  chunkId: { type: String, required: true, unique: true },
+  roomId: {
+    type: Schema.Types.ObjectId,
+    ref: "Room",
+    required: true,
+    index: true,
+  },
+  sourceId: { type: String, required: true, index: true },
+  pageNumber: { type: Number, required: true },
+  text: { type: String, required: true },
+});
+
 export const User = mongoose.model("User", userSchema);
 export const Room = mongoose.model("Room", roomSchema);
 export const Source = mongoose.model("Source", sourceSchema);
 export const Message = mongoose.model("Message", messageSchema);
+export const Citation = mongoose.model("Citation", citationSchema);

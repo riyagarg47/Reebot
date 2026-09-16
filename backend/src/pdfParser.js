@@ -4,9 +4,12 @@ import { fileURLToPath } from "node:url";
 const parserPath = fileURLToPath(
   new URL("./pdf_parser.py", import.meta.url),
 );
+const previewPath = fileURLToPath(
+  new URL("./citation_preview.py", import.meta.url),
+);
 
 /**
- * Send PDF bytes to the Python extractor and resolve with its Markdown output.
+ * Send PDF bytes to the Python extractor and resolve with page-aware Markdown.
  * Chunking intentionally happens in JavaScript after this function returns.
  */
 export function parsePdf(buffer) {
@@ -36,15 +39,49 @@ export function parsePdf(buffer) {
       try {
         // Buffer all output because JSON may arrive across several data events.
         const result = JSON.parse(Buffer.concat(stdout).toString("utf8"));
-        if (typeof result.markdown !== "string") {
+        if (!Array.isArray(result.pages)) {
           throw new Error("Python PDF parser returned invalid output.");
         }
-        resolve(result.markdown);
+        resolve(result.pages);
       } catch (error) {
         reject(new Error(`Could not read Python parser output: ${error.message}`));
       }
     });
 
     child.stdin.end(buffer);
+  });
+}
+
+export function renderCitationPreview(buffer, pageNumber, text) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.env.PYTHON_BIN || "python3", [previewPath], {
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: Number(process.env.PDF_PARSE_TIMEOUT_MS) || 120_000,
+    });
+    const stdout = [];
+    const stderr = [];
+
+    child.stdout.on("data", (data) => stdout.push(data));
+    child.stderr.on("data", (data) => stderr.push(data));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(
+          new Error(
+            Buffer.concat(stderr).toString("utf8").trim() ||
+              "Could not render citation preview.",
+          ),
+        );
+        return;
+      }
+      resolve(Buffer.concat(stdout));
+    });
+
+    child.stdin.end(
+      Buffer.concat([
+        Buffer.from(`${JSON.stringify({ pageNumber, text })}\n`),
+        buffer,
+      ]),
+    );
   });
 }

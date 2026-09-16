@@ -14,6 +14,7 @@ export default defineConfig({
       "/rooms": backend,
       "/ingest": backend,
       "/chat": backend,
+      "/citations": backend,
     },
   },
 });

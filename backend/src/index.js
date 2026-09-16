@@ -4,15 +4,17 @@ import dotenv from "dotenv";
 import multer from "multer";
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
-import { ChromaClient } from "chromadb";
+import { CloudClient } from "chromadb";
 import OpenAI from "openai";
 import { chunkText, saveChunks, textFromUrl } from "./ingest.js";
 import { chunkMarkdown } from "./markdownChunker.js";
 import { streamAnswer } from "./chat.js";
 import { connectDb } from "./db.js";
-import { parsePdf } from "./pdfParser.js";
-import { User, Room, Source, Message } from "./models.js";
+import { parsePdf, renderCitationPreview } from "./pdfParser.js";
+import { User, Room, Source, Message, Citation } from "./models.js";
 import { signToken, publicUser, requireAuth } from "./auth.js";
+import { COLLECTION_NAME, getReebotCollection } from "./chroma.js";
+import { deletePdf, readPdf, savePdf } from "./pdfStorage.js";
 
 dotenv.config();
 
@@ -27,13 +29,16 @@ const upload = multer({
 
 const port = process.env.PORT || 3001;
 const mongoUrl = process.env.MONGODB_URL || "mongodb://localhost:27017/reebot";
-const chromaUrl = process.env.CHROMA_URL || "http://localhost:8000";
 const embeddingModel =
   process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small";
 
 const chatModel = process.env.OPENAI_CHAT_MODEL || "gpt-4o-mini";
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const chroma = new ChromaClient({ path: chromaUrl });
+const chroma = new CloudClient({
+  apiKey: process.env.CHROMA_API_KEY,
+  tenant: process.env.CHROMA_TENANT,
+  database: process.env.CHROMA_DATABASE,
+});
 
 function isValidRoomId(value) {
   return typeof value === "string" && mongoose.isValidObjectId(value);
@@ -268,18 +273,19 @@ app.delete("/rooms/:id", requireAuth, async (req, res) => {
     const room = await findOwnRoom(req.params.id, req.userId, res);
     if (!room) return;
 
-    try {
-      const collection = await chroma.getCollection({ name: "reebot" });
-      await collection.delete({
-        where: { roomId: { $eq: String(room._id) } },
-      });
-    } catch (error) {
-      if (error.status !== 404) throw error;
-    }
+    const [collection, sources] = await Promise.all([
+      getReebotCollection(chroma),
+      Source.find({ roomId: room._id }).select("fileName -_id").lean(),
+    ]);
+    await collection.delete({
+      where: { roomId: { $eq: String(room._id) } },
+    });
 
     await Promise.all([
+      ...sources.map((source) => deletePdf(source.fileName)),
       Source.deleteMany({ roomId: room._id }),
       Message.deleteMany({ roomId: room._id }),
+      Citation.deleteMany({ roomId: room._id }),
       Room.deleteOne({ _id: room._id }),
     ]);
 
@@ -328,8 +334,12 @@ app.post("/ingest", requireAuth, upload.array("pdfs", 20), async (req, res) => {
       const started = Date.now();
       // Python extracts structured Markdown; JavaScript converts it into the
       // context-rich chunks stored in the vector database.
-      const markdown = await parsePdf(file.buffer);
-      const chunks = chunkMarkdown(markdown);
+      const pages = await parsePdf(file.buffer);
+      const pageChunks = pages.flatMap(({ pageNumber, markdown }) =>
+        chunkMarkdown(markdown).map((text) => ({ pageNumber, text })),
+      );
+      const chunks = pageChunks.map(({ text }) => text);
+      const chunkIds = chunks.map(() => crypto.randomUUID());
       const parsedChars = chunks.reduce(
         (total, chunk) => total + chunk.length,
         0,
@@ -343,13 +353,50 @@ app.post("/ingest", requireAuth, upload.array("pdfs", 20), async (req, res) => {
         sourceId,
         roomId: String(room._id),
       };
-      await saveChunks(chroma, openai, embeddingModel, chunks, metadata);
-      await Source.create({
-        roomId: room._id,
-        sourceId,
-        type: "pdf",
-        name: file.originalname,
-      });
+      const fileName = `${sourceId}.pdf`;
+
+      await savePdf(fileName, file.buffer);
+      try {
+        await saveChunks(
+          chroma,
+          openai,
+          embeddingModel,
+          chunks,
+          pageChunks.map(({ pageNumber }, chunkIndex) => ({
+            ...metadata,
+            pageNumber,
+            chunkIndex,
+          })),
+          chunkIds,
+        );
+        await Promise.all([
+          Source.create({
+            roomId: room._id,
+            sourceId,
+            type: "pdf",
+            name: file.originalname,
+            fileName,
+          }),
+          Citation.insertMany(
+            pageChunks.map(({ pageNumber, text }, index) => ({
+              chunkId: chunkIds[index],
+              roomId: room._id,
+              sourceId,
+              pageNumber,
+              text,
+            })),
+          ),
+        ]);
+      } catch (error) {
+        const collection = await getReebotCollection(chroma);
+        await Promise.allSettled([
+          collection.delete({ ids: chunkIds }),
+          Citation.deleteMany({ sourceId, roomId: room._id }),
+          Source.deleteOne({ sourceId, roomId: room._id }),
+          deletePdf(fileName),
+        ]);
+        throw error;
+      }
       existingKeys.add(key);
       saved.push({
         sourceId,
@@ -404,19 +451,60 @@ app.delete("/ingest", requireAuth, async (req, res) => {
     const room = await findOwnRoom(roomId, req.userId, res);
     if (!room) return;
 
-    try {
-      const collection = await chroma.getCollection({ name: "reebot" });
-      await collection.delete({
-        where: {
-          $and: [{ sourceId: { $eq: sourceId } }, { roomId: { $eq: roomId } }],
-        },
-      });
-    } catch (error) {
-      if (error.status !== 404) throw error;
-    }
-    await Source.deleteOne({ sourceId, roomId });
+    const [collection, source] = await Promise.all([
+      getReebotCollection(chroma),
+      Source.findOne({ sourceId, roomId }).lean(),
+    ]);
+    await collection.delete({
+      where: {
+        $and: [{ sourceId: { $eq: sourceId } }, { roomId: { $eq: roomId } }],
+      },
+    });
+    await Promise.all([
+      deletePdf(source?.fileName),
+      Citation.deleteMany({ sourceId, roomId }),
+      Source.deleteOne({ sourceId, roomId }),
+    ]);
 
     res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/citations/:chunkId/preview", requireAuth, async (req, res) => {
+  try {
+    const citation = await Citation.findOne({
+      chunkId: req.params.chunkId,
+    }).lean();
+    if (!citation) {
+      return res.status(404).json({ error: "Citation not found." });
+    }
+
+    const room = await Room.findOne({
+      _id: citation.roomId,
+      userId: req.userId,
+    }).lean();
+    if (!room) return res.status(404).json({ error: "Citation not found." });
+
+    const source = await Source.findOne({
+      roomId: room._id,
+      sourceId: citation.sourceId,
+      type: "pdf",
+    }).lean();
+    if (!source?.fileName) {
+      return res.status(404).json({ error: "PDF not found." });
+    }
+
+    const pdf = await readPdf(source.fileName);
+    const image = await renderCitationPreview(
+      pdf,
+      citation.pageNumber,
+      citation.text,
+    );
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "private, max-age=3600");
+    res.send(image);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -493,7 +581,7 @@ connectDb(mongoUrl)
   .then(() => {
     app.listen(port, () => {
       console.log(`Backend running on http://localhost:${port}`);
-      console.log(`ChromaDB target: ${chromaUrl}`);
+      console.log(`Chroma Cloud collection: ${COLLECTION_NAME}`);
     });
   })
   .catch((error) => {

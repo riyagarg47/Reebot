@@ -6,7 +6,7 @@ or URLs, and ask questions that are answered from those sources.
 ## Architecture
 
 - `frontend/`: React and Vite user interface.
-- `backend/`: Express API, MongoDB models, local Chroma vector retrieval, and
+- `backend/`: Express API, MongoDB models, Chroma Cloud hybrid retrieval, and
   OpenAI chat.
 - `backend/src/pdf_parser.py`: extracts PDF content as Markdown with
   PyMuPDF4LLM.
@@ -16,11 +16,25 @@ or URLs, and ask questions that are answered from those sources.
 
 Room ingestion preserves Markdown structure and heading context while keeping
 chunks within the configured size whenever a structural block permits it.
+PDFs are stored in `backend/uploads/`. Answers include chunk citations;
+hovering a PDF citation renders its source page with the supporting text
+highlighted.
+
+## Chroma Cloud setup
+
+Create a Chroma Cloud database and API key, then add `CHROMA_API_KEY`,
+`CHROMA_TENANT`, and `CHROMA_DATABASE` to `backend/.env`. Reebot creates the
+`reebot-hybrid-v1` collection with a Chroma BM25 sparse index and combines it
+with OpenAI dense-vector results using Reciprocal Rank Fusion (70% dense, 30%
+BM25). BM25 index statistics and retrieval are managed by Chroma, not MongoDB.
+
+Collection schemas cannot currently be changed after creation. Sources stored
+in the former local `reebot` collection therefore need to be uploaded again.
 
 ## Run with Docker
 
-1. Copy `.env.example` to `backend/.env` and set `OPENAI_API_KEY` and
-   `JWT_SECRET`.
+1. Copy `.env.example` to `backend/.env` and set `OPENAI_API_KEY`,
+   `JWT_SECRET`, `CHROMA_API_KEY`, `CHROMA_TENANT`, and `CHROMA_DATABASE`.
 2. Start the stack:
 
    ```sh
@@ -32,7 +46,7 @@ chunks within the configured size whenever a structural block permits it.
 ## Local development
 
 The backend requires Node.js 22+, Python 3, the packages in
-`backend/requirements.txt`, MongoDB, and ChromaDB. MongoDB and ChromaDB must be
+`backend/requirements.txt`, MongoDB, and a Chroma Cloud account. MongoDB must be
 available when running the backend outside Docker.
 
 ```sh
@@ -55,13 +69,6 @@ Because `backend/.env` is in the backend working directory, `dotenv` loads it
 automatically. `PYTHON_BIN` selects the virtual environment used by the PDF
 parser. Set `PDF_PARSE_TIMEOUT_MS` in `backend/.env` to override the default
 two-minute parser timeout.
-
-## Verification
-
-```sh
-cd backend && npm test
-cd frontend && npm run build
-```
 
 PyMuPDF4LLM and PyMuPDF are AGPL-3.0 licensed unless used under a commercial
 license. Confirm that this is compatible with your distribution model.

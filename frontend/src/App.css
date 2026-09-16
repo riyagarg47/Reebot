@@ -926,6 +926,37 @@ input::placeholder {
   border-radius: 4px;
 }
 
+.citation {
+  position: relative;
+  display: inline-block;
+}
+
+.citation > a {
+  color: var(--accent);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.citation-preview {
+  position: fixed;
+  z-index: 1000;
+  width: min(680px, calc(100vw - 24px));
+  overflow: auto;
+  padding: 7px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.citation-preview img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
 .markdown pre {
   overflow: auto;
   padding: 10px;
